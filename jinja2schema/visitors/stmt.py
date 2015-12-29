@@ -30,15 +30,16 @@ def visits_stmt(node_cls):
     """
     def decorator(func):
         stmt_visitors[node_cls] = func
+
         @functools.wraps(func)
-        def wrapped_func(ast, macroses=None, config=default_config):
+        def wrapped_func(ast, macroses=None, config=default_config, blocks=None):
             assert isinstance(ast, node_cls)
-            return func(ast, macroses, config)
+            return func(ast, macroses, config, blocks)
         return wrapped_func
     return decorator
 
 
-def visit_stmt(ast, macroses=None, config=default_config):
+def visit_stmt(ast, macroses=None, config=default_config, blocks=None):
     """Returns a structure of ``ast``.
 
     :param ast: instance of :class:`jinja2.nodes.Stmt`
@@ -55,7 +56,7 @@ def visit_stmt(ast, macroses=None, config=default_config):
 
 
 @visits_stmt(nodes.For)
-def visit_for(ast, macroses=None, config=default_config):
+def visit_for(ast, macroses=None, config=default_config, blocks=None):
     body_struct = visit_many(ast.body, macroses, config, predicted_struct_cls=Scalar)
     else_struct = visit_many(ast.else_, macroses, config, predicted_struct_cls=Scalar)
 
@@ -84,7 +85,7 @@ def visit_for(ast, macroses=None, config=default_config):
 
 
 @visits_stmt(nodes.If)
-def visit_if(ast, macroses=None, config=default_config):
+def visit_if(ast, macroses=None, config=default_config, blocks=None):
     if config.BOOLEAN_CONDITIONS:
         test_predicted_struct = Boolean.from_ast(ast.test)
     else:
@@ -114,7 +115,7 @@ def visit_if(ast, macroses=None, config=default_config):
 
 
 @visits_stmt(nodes.Assign)
-def visit_assign(ast, macroses=None, config=default_config):
+def visit_assign(ast, macroses=None, config=default_config, blocks=None):
     struct = Dictionary()
     if (isinstance(ast.target, nodes.Name) or
             (isinstance(ast.target, nodes.Tuple) and isinstance(ast.node, nodes.Tuple))):
@@ -149,12 +150,12 @@ def visit_assign(ast, macroses=None, config=default_config):
 
 
 @visits_stmt(nodes.Output)
-def visit_output(ast, macroses=None, config=default_config):
+def visit_output(ast, macroses=None, config=default_config, blocks=None):
     return visit_many(ast.nodes, macroses, config, predicted_struct_cls=Scalar)
 
 
 @visits_stmt(nodes.Macro)
-def visit_macro(ast, macroses=None, config=default_config):
+def visit_macro(ast, macroses=None, config=default_config, blocks=None):
     # XXX the code needs to be refactored
     args = []
     kwargs = []
@@ -191,19 +192,27 @@ def visit_macro(ast, macroses=None, config=default_config):
 
 
 @visits_stmt(nodes.Include)
-def visit_include(ast, macroses=None, config=default_config):
+def visit_include(ast, macroses=None, config=default_config, blocks=None):
     env = Environment(loader=PackageLoader(config.PACKAGE_NAME, config.TEMPLATE_DIR))
     template = env.parse(env.loader.get_source(env, ast.template.value)[0])
     return visit_many(template.body, macroses, config)
 
 
 @visits_stmt(nodes.Extends)
-def visit_extends(ast, macroses=None, config=default_config):
+def visit_extends(ast, macroses=None, config=default_config, blocks=None):
     env = Environment(loader=PackageLoader(config.PACKAGE_NAME, config.TEMPLATE_DIR))
     template = env.parse(env.loader.get_source(env, ast.template.value)[0])
-    return visit_many(template.body, macroses, config)
+    if not blocks:
+        return visit_many(template.body, macroses, config)
+    parent_blocks = [x for x in template.body if isinstance(x, nodes.Block)]
+    parent_non_blocks = [x for x in template.body if not isinstance(x, nodes.Block)]
+    blocks_to_use = blocks + parent_blocks
+    for parent_block in parent_blocks:
+        if parent_block.name in [n.name for n in blocks]:
+            blocks_to_use.remove(parent_block)
+    return visit_many(parent_non_blocks + blocks_to_use, None, config)
 
 
 @visits_stmt(nodes.Block)
-def visit_block(ast, macroses=None, config=default_config):
+def visit_block(ast, macroses=None, config=default_config, blocks=None):
     return visit_many(ast.body, macroses, config)
