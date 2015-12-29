@@ -32,14 +32,14 @@ def visits_stmt(node_cls):
         stmt_visitors[node_cls] = func
 
         @functools.wraps(func)
-        def wrapped_func(ast, macroses=None, config=default_config, blocks=None):
+        def wrapped_func(ast, macros=None, config=default_config, child_blocks=None):
             assert isinstance(ast, node_cls)
-            return func(ast, macroses, config, blocks)
+            return func(ast, macros, config, child_blocks)
         return wrapped_func
     return decorator
 
 
-def visit_stmt(ast, macroses=None, config=default_config, blocks=None):
+def visit_stmt(ast, macros=None, config=default_config, child_blocks=None):
     """Returns a structure of ``ast``.
 
     :param ast: instance of :class:`jinja2.nodes.Stmt`
@@ -52,13 +52,13 @@ def visit_stmt(ast, macroses=None, config=default_config, blocks=None):
                 visitor = visitor_
     if not visitor:
         raise Exception('stmt visitor for {0} is not found'.format(type(ast)))
-    return visitor(ast, macroses, config)
+    return visitor(ast, macros, config)
 
 
 @visits_stmt(nodes.For)
-def visit_for(ast, macroses=None, config=default_config, blocks=None):
-    body_struct = visit_many(ast.body, macroses, config, predicted_struct_cls=Scalar)
-    else_struct = visit_many(ast.else_, macroses, config, predicted_struct_cls=Scalar)
+def visit_for(ast, macros=None, config=default_config, child_blocks=None):
+    body_struct = visit_many(ast.body, macros, config, predicted_struct_cls=Scalar)
+    else_struct = visit_many(ast.else_, macros, config, predicted_struct_cls=Scalar)
 
     if 'loop' in body_struct:
         # exclude a special `loop` variable from the body structure
@@ -77,7 +77,7 @@ def visit_for(ast, macroses=None, config=default_config, blocks=None):
         Context(
             return_struct_cls=Unknown,
             predicted_struct=List.from_ast(ast, target_struct)),
-        macroses, config)
+        macros, config)
 
     merge(iter_rtype, List(target_struct))
 
@@ -85,15 +85,15 @@ def visit_for(ast, macroses=None, config=default_config, blocks=None):
 
 
 @visits_stmt(nodes.If)
-def visit_if(ast, macroses=None, config=default_config, blocks=None):
+def visit_if(ast, macros=None, config=default_config, child_blocks=None):
     if config.BOOLEAN_CONDITIONS:
         test_predicted_struct = Boolean.from_ast(ast.test)
     else:
         test_predicted_struct = Unknown.from_ast(ast.test)
     test_rtype, test_struct = visit_expr(
-        ast.test, Context(predicted_struct=test_predicted_struct), macroses, config)
-    if_struct = visit_many(ast.body, macroses, config, predicted_struct_cls=Scalar)
-    else_struct = visit_many(ast.else_, macroses, config, predicted_struct_cls=Scalar) if ast.else_ else Dictionary()
+        ast.test, Context(predicted_struct=test_predicted_struct), macros, config)
+    if_struct = visit_many(ast.body, macros, config, predicted_struct_cls=Scalar)
+    else_struct = visit_many(ast.else_, macros, config, predicted_struct_cls=Scalar) if ast.else_ else Dictionary()
     struct = merge_many(test_struct, if_struct, else_struct)
 
     for var_name, var_struct in iteritems(test_struct):
@@ -115,7 +115,7 @@ def visit_if(ast, macroses=None, config=default_config, blocks=None):
 
 
 @visits_stmt(nodes.Assign)
-def visit_assign(ast, macroses=None, config=default_config, blocks=None):
+def visit_assign(ast, macros=None, config=default_config, child_blocks=None):
     struct = Dictionary()
     if (isinstance(ast.target, nodes.Name) or
             (isinstance(ast.target, nodes.Tuple) and isinstance(ast.node, nodes.Tuple))):
@@ -129,7 +129,7 @@ def visit_assign(ast, macroses=None, config=default_config, blocks=None):
             for name_ast, var_ast in izip(ast.target.items, ast.node.items):
                 variables.append((name_ast.name, var_ast))
         for var_name, var_ast in variables:
-            var_rtype, var_struct = visit_expr(var_ast, Context(predicted_struct=Unknown.from_ast(var_ast)), macroses, config)
+            var_rtype, var_struct = visit_expr(var_ast, Context(predicted_struct=Unknown.from_ast(var_ast)), macros, config)
             var_rtype.constant = True
             var_rtype.label = var_name
             struct = merge_many(struct, var_struct, Dictionary({
@@ -143,30 +143,30 @@ def visit_assign(ast, macroses=None, config=default_config, blocks=None):
             tuple_items.append(var_struct)
             struct = merge(struct, Dictionary({name_ast.name: var_struct}))
         var_rtype, var_struct = visit_expr(
-            ast.node, Context(return_struct_cls=Unknown, predicted_struct=Tuple(tuple_items)), macroses, config)
+            ast.node, Context(return_struct_cls=Unknown, predicted_struct=Tuple(tuple_items)), macros, config)
         return merge(struct, var_struct)
     else:
         raise InvalidExpression(ast, 'unsupported assignment')
 
 
 @visits_stmt(nodes.Output)
-def visit_output(ast, macroses=None, config=default_config, blocks=None):
-    return visit_many(ast.nodes, macroses, config, predicted_struct_cls=Scalar)
+def visit_output(ast, macros=None, config=default_config, child_blocks=None):
+    return visit_many(ast.nodes, macros, config, predicted_struct_cls=Scalar)
 
 
 @visits_stmt(nodes.Macro)
-def visit_macro(ast, macroses=None, config=default_config, blocks=None):
+def visit_macro(ast, macros=None, config=default_config, child_blocks=None):
     # XXX the code needs to be refactored
     args = []
     kwargs = []
-    body_struct = visit_many(ast.body, macroses, config, predicted_struct_cls=Scalar)
+    body_struct = visit_many(ast.body, macros, config, predicted_struct_cls=Scalar)
 
     for i, (arg, default_value_ast) in enumerate(reversed(list(zip_longest(reversed(ast.args),
                                                                            reversed(ast.defaults)))), start=1):
         has_default_value = bool(default_value_ast)
         if has_default_value:
             default_rtype, default_struct = visit_expr(
-                default_value_ast, Context(predicted_struct=Unknown()), macroses, config)
+                default_value_ast, Context(predicted_struct=Unknown()), macros, config)
         else:
             default_rtype = Unknown(linenos=[arg.lineno])
         default_rtype.constant = False
@@ -178,7 +178,7 @@ def visit_macro(ast, macroses=None, config=default_config, blocks=None):
             kwargs.append((arg.name, default_rtype))
         else:
             args.append((arg.name, default_rtype))
-    macroses[ast.name] = Macro(ast.name, args, kwargs)
+    macros[ast.name] = Macro(ast.name, args, kwargs)
 
     tmp = dict(args)
     tmp.update(dict(kwargs))
@@ -191,52 +191,38 @@ def visit_macro(ast, macroses=None, config=default_config, blocks=None):
     return body_struct
 
 
-@visits_stmt(nodes.Include)
-def visit_include(ast, macroses=None, config=default_config, blocks=None):
-    env = Environment(loader=PackageLoader(config.PACKAGE_NAME, config.TEMPLATE_DIR))
-    template = env.parse(env.loader.get_source(env, ast.template.value)[0])
-    if not blocks:
-        return visit_many(template.body, macroses, config)
-
-    parent_blocks = []
-    non_blocks = []
-    for block in template.body:
-        if isinstance(block, nodes.Block):
-            parent_blocks.append(block)
-        else:
-            non_blocks.append(block)
-
-    all_blocks = blocks + parent_blocks
-    child_block_names = [n.name for n in blocks]
-    for parent_block in parent_blocks:
-        if parent_block.name in child_block_names:
-            all_blocks.remove(parent_block)
-    return visit_many(non_blocks + all_blocks, None, config)
-
-
-@visits_stmt(nodes.Extends)
-def visit_extends(ast, macroses=None, config=default_config, blocks=None):
-    env = Environment(loader=PackageLoader(config.PACKAGE_NAME, config.TEMPLATE_DIR))
-    template = env.parse(env.loader.get_source(env, ast.template.value)[0])
-    if not blocks:
-        return visit_many(template.body, macroses, config)
-
-    parent_blocks = []
-    non_blocks = []
-    for block in template.body:
-        if isinstance(block, nodes.Block):
-            parent_blocks.append(block)
-        else:
-            non_blocks.append(block)
-
-    all_blocks = blocks + parent_blocks
-    child_block_names = [n.name for n in blocks]
-    for parent_block in parent_blocks:
-        if parent_block.name in child_block_names:
-            all_blocks.remove(parent_block)
-    return visit_many(non_blocks + all_blocks, None, config)
-
-
 @visits_stmt(nodes.Block)
-def visit_block(ast, macroses=None, config=default_config, blocks=None):
-    return visit_many(ast.body, macroses, config)
+def visit_block(ast, macros=None, config=default_config, child_blocks=None):
+    return visit_many(ast.body, macros, config)
+
+
+@visits_stmt((nodes.Extends, nodes.Include))
+def visit_inheritance(ast, macros=None, config=default_config, child_blocks=None):
+    template = get_inherited_template(config, ast)
+    if not child_blocks:
+        return visit_many(template.body, macros, config)
+    return visit_many(get_correct_nodes(child_blocks, template.body), None, config)
+
+
+def get_inherited_template(config, ast):
+    env = Environment(loader=PackageLoader(config.PACKAGE_NAME, config.TEMPLATE_DIR))
+    return env.parse(env.loader.get_source(env, ast.template.value)[0])
+
+
+def separate_template_blocks(template, blocks, template_nodes):
+    for node in template:
+        if isinstance(node, nodes.Block):
+            blocks.append(node)
+        else:
+            template_nodes.append(node)
+    return blocks, template_nodes
+
+
+def get_correct_nodes(child_blocks, template):
+    parent_blocks, nodes = separate_template_blocks(template, [], [])
+    child_block_names = [c.name for c in child_blocks]
+    blocks = child_blocks + parent_blocks
+    for parent_block in parent_blocks:
+        if parent_block.name in child_block_names:
+            blocks.remove(parent_block)
+    return blocks + nodes
