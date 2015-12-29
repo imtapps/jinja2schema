@@ -8,14 +8,14 @@ Statement visitors return :class:`.models.Dictionary` of structures of variables
 """
 import functools
 
-from jinja2 import nodes
+from jinja2 import nodes, Environment, PackageLoader
 from jinja2schema.config import default_config
 
 from ..model import Scalar, Dictionary, List, Unknown, Tuple, Boolean
 from ..macro import Macro
 from ..mergers import merge, merge_many
 from ..exceptions import InvalidExpression
-from .. import _compat
+from .._compat import iteritems, izip, zip_longest
 from .expr import Context, visit_expr
 from .util import visit_many
 
@@ -30,15 +30,16 @@ def visits_stmt(node_cls):
     """
     def decorator(func):
         stmt_visitors[node_cls] = func
+
         @functools.wraps(func)
-        def wrapped_func(ast, macroses=None, config=default_config):
+        def wrapped_func(ast, macroses=None, config=default_config, blocks=None):
             assert isinstance(ast, node_cls)
-            return func(ast, macroses, config)
+            return func(ast, macroses, config, blocks)
         return wrapped_func
     return decorator
 
 
-def visit_stmt(ast, macroses=None, config=default_config):
+def visit_stmt(ast, macroses=None, config=default_config, blocks=None):
     """Returns a structure of ``ast``.
 
     :param ast: instance of :class:`jinja2.nodes.Stmt`
@@ -46,7 +47,7 @@ def visit_stmt(ast, macroses=None, config=default_config):
     """
     visitor = stmt_visitors.get(type(ast))
     if not visitor:
-        for node_cls, visitor_ in stmt_visitors.iteritems():
+        for node_cls, visitor_ in iteritems(stmt_visitors):
             if isinstance(ast, node_cls):
                 visitor = visitor_
     if not visitor:
@@ -55,7 +56,7 @@ def visit_stmt(ast, macroses=None, config=default_config):
 
 
 @visits_stmt(nodes.For)
-def visit_for(ast, macroses=None, config=default_config):
+def visit_for(ast, macroses=None, config=default_config, blocks=None):
     body_struct = visit_many(ast.body, macroses, config, predicted_struct_cls=Scalar)
     else_struct = visit_many(ast.else_, macroses, config, predicted_struct_cls=Scalar)
 
@@ -84,7 +85,7 @@ def visit_for(ast, macroses=None, config=default_config):
 
 
 @visits_stmt(nodes.If)
-def visit_if(ast, macroses=None, config=default_config):
+def visit_if(ast, macroses=None, config=default_config, blocks=None):
     if config.BOOLEAN_CONDITIONS:
         test_predicted_struct = Boolean.from_ast(ast.test)
     else:
@@ -95,7 +96,7 @@ def visit_if(ast, macroses=None, config=default_config):
     else_struct = visit_many(ast.else_, macroses, config, predicted_struct_cls=Scalar) if ast.else_ else Dictionary()
     struct = merge_many(test_struct, if_struct, else_struct)
 
-    for var_name, var_struct in test_struct.iteritems():
+    for var_name, var_struct in iteritems(test_struct):
         if var_struct.checked_as_defined or var_struct.checked_as_undefined:
             if var_struct.checked_as_undefined:
                 lookup_struct = if_struct
@@ -114,7 +115,7 @@ def visit_if(ast, macroses=None, config=default_config):
 
 
 @visits_stmt(nodes.Assign)
-def visit_assign(ast, macroses=None, config=default_config):
+def visit_assign(ast, macroses=None, config=default_config, blocks=None):
     struct = Dictionary()
     if (isinstance(ast.target, nodes.Name) or
             (isinstance(ast.target, nodes.Tuple) and isinstance(ast.node, nodes.Tuple))):
@@ -125,7 +126,7 @@ def visit_assign(ast, macroses=None, config=default_config):
             if len(ast.target.items) != len(ast.node.items):
                 raise InvalidExpression(ast, 'number of items in left side is different '
                                              'from right side')
-            for name_ast, var_ast in _compat.izip(ast.target.items, ast.node.items):
+            for name_ast, var_ast in izip(ast.target.items, ast.node.items):
                 variables.append((name_ast.name, var_ast))
         for var_name, var_ast in variables:
             var_rtype, var_struct = visit_expr(var_ast, Context(predicted_struct=Unknown.from_ast(var_ast)), macroses, config)
@@ -149,18 +150,18 @@ def visit_assign(ast, macroses=None, config=default_config):
 
 
 @visits_stmt(nodes.Output)
-def visit_output(ast, macroses=None, config=default_config):
+def visit_output(ast, macroses=None, config=default_config, blocks=None):
     return visit_many(ast.nodes, macroses, config, predicted_struct_cls=Scalar)
 
 
 @visits_stmt(nodes.Macro)
-def visit_macro(ast, macroses=None, config=default_config):
+def visit_macro(ast, macroses=None, config=default_config, blocks=None):
     # XXX the code needs to be refactored
     args = []
     kwargs = []
     body_struct = visit_many(ast.body, macroses, config, predicted_struct_cls=Scalar)
 
-    for i, (arg, default_value_ast) in enumerate(reversed(list(_compat.zip_longest(reversed(ast.args),
+    for i, (arg, default_value_ast) in enumerate(reversed(list(zip_longest(reversed(ast.args),
                                                                            reversed(ast.defaults)))), start=1):
         has_default_value = bool(default_value_ast)
         if has_default_value:
@@ -188,3 +189,54 @@ def visit_macro(ast, macroses=None, config=default_config):
     for arg in args_struct.iterkeys():
         body_struct.pop(arg, None)
     return body_struct
+
+
+@visits_stmt(nodes.Include)
+def visit_include(ast, macroses=None, config=default_config, blocks=None):
+    env = Environment(loader=PackageLoader(config.PACKAGE_NAME, config.TEMPLATE_DIR))
+    template = env.parse(env.loader.get_source(env, ast.template.value)[0])
+    if not blocks:
+        return visit_many(template.body, macroses, config)
+
+    parent_blocks = []
+    non_blocks = []
+    for block in template.body:
+        if isinstance(block, nodes.Block):
+            parent_blocks.append(block)
+        else:
+            non_blocks.append(block)
+
+    all_blocks = blocks + parent_blocks
+    child_block_names = [n.name for n in blocks]
+    for parent_block in parent_blocks:
+        if parent_block.name in child_block_names:
+            all_blocks.remove(parent_block)
+    return visit_many(non_blocks + all_blocks, None, config)
+
+
+@visits_stmt(nodes.Extends)
+def visit_extends(ast, macroses=None, config=default_config, blocks=None):
+    env = Environment(loader=PackageLoader(config.PACKAGE_NAME, config.TEMPLATE_DIR))
+    template = env.parse(env.loader.get_source(env, ast.template.value)[0])
+    if not blocks:
+        return visit_many(template.body, macroses, config)
+
+    parent_blocks = []
+    non_blocks = []
+    for block in template.body:
+        if isinstance(block, nodes.Block):
+            parent_blocks.append(block)
+        else:
+            non_blocks.append(block)
+
+    all_blocks = blocks + parent_blocks
+    child_block_names = [n.name for n in blocks]
+    for parent_block in parent_blocks:
+        if parent_block.name in child_block_names:
+            all_blocks.remove(parent_block)
+    return visit_many(non_blocks + all_blocks, None, config)
+
+
+@visits_stmt(nodes.Block)
+def visit_block(ast, macroses=None, config=default_config, blocks=None):
+    return visit_many(ast.body, macroses, config)
